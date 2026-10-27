@@ -63,7 +63,6 @@ public:
           m_sendTimer(nullptr),
           m_logTimer(nullptr),
           m_audioContinuationPending(false),
-          m_captureChannels(1),
           m_useFloat(false),
           m_pcmFrameSize(0),
           m_pcmBytes(0),
@@ -142,52 +141,11 @@ public:
             return false;
         }
 
-        // Trust the ACTUAL format, not the requested one: on macOS the
-        // backend can settle on a different layout than requested (stereo
-        // when mono was asked for, or the other sample format). Slicing
-        // the byte stream with the requested layout then mis-frames the
-        // audio: stereo bytes sliced as mono pack 5 ms of audio into each
-        // 10 ms Opus frame, which plays back at half speed, deep and
-        // garbled. This was observed on both the built-in mic and a wired
-        // USB-C headset, with the mics sounding normal in other Mac apps.
-        QAudioFormat actual = m_audioInput->format();
-        qInfo() << "[MicStream] Actual capture format:" << actual.sampleRate() << "Hz"
-                << actual.channelCount() << "channels" << "sampleFormat=" << actual.sampleFormat();
-        // Reset per-run state (start() can run again after stop()).
-        m_captureChannels = 1;
-        if (actual.sampleRate() != 0 && actual.sampleRate() != 48000) {
-            // No resampler in this path: a clear failure beats slow audio.
-            qWarning() << "[MicStream] Unsupported capture rate" << actual.sampleRate() << "Hz, expected 48000";
-            cleanupAudioResources();
-            return false;
-        }
-        if (actual.channelCount() == 2) {
-            m_captureChannels = 2;
-            qInfo() << "[MicStream] Downmixing stereo capture to mono";
-        } else if (actual.channelCount() != 0 && actual.channelCount() != 1) {
-            qWarning() << "[MicStream] Unsupported capture channel count" << actual.channelCount();
-            cleanupAudioResources();
-            return false;
-        }
-        if (actual.sampleFormat() == QAudioFormat::Float) {
-            m_useFloat = true;
-        } else if (actual.sampleFormat() == QAudioFormat::Int16) {
-            m_useFloat = false;
-        } else if (actual.sampleFormat() != QAudioFormat::Unknown) {
-            qWarning() << "[MicStream] Unsupported capture sample format" << actual.sampleFormat();
-            cleanupAudioResources();
-            return false;
-        }
-        // m_pcmFrameSize stays mono-frame bytes: stereo input is downmixed
-        // to mono in onAudio() before it reaches the frame slicer.
-        m_pcmFrameSize = PCM_FRAME_SAMPLES * (m_useFloat ? 4 : 2);
-
         qInfo() << "[MicStream] Audio device initialized successfully";
         connect(m_audioDevice, &QIODevice::readyRead, this, &MicStreamWorker::onAudio);
 
         resetStatistics();
         m_partialBuffer.clear();
-        m_downmixRemainder.clear();
         m_queue.clear();
         m_audioContinuationPending = false;
 
@@ -239,29 +197,6 @@ private:
         }
     }
 
-    // Average each L/R pair to mono. Input must hold whole stereo frames
-    // (the caller guarantees this); output holds one mono sample per pair.
-    QByteArray downmixToMono(const QByteArray &stereo)
-    {
-        QByteArray mono;
-        if (m_useFloat) {
-            const int pairs = stereo.size() / 8;
-            mono.resize(pairs * 4);
-            const float *in = reinterpret_cast<const float*>(stereo.constData());
-            float *out = reinterpret_cast<float*>(mono.data());
-            for (int i = 0; i < pairs; i++)
-                out[i] = (in[i * 2] + in[i * 2 + 1]) * 0.5f;
-        } else {
-            const int pairs = stereo.size() / 4;
-            mono.resize(pairs * 2);
-            const qint16 *in = reinterpret_cast<const qint16*>(stereo.constData());
-            qint16 *out = reinterpret_cast<qint16*>(mono.data());
-            for (int i = 0; i < pairs; i++)
-                out[i] = static_cast<qint16>((static_cast<qint32>(in[i * 2]) + static_cast<qint32>(in[i * 2 + 1])) / 2);
-        }
-        return mono;
-    }
-
     void onAudio()
     {
         if (!m_audioDevice || !m_encoder)
@@ -272,20 +207,7 @@ private:
 
         QByteArray chunk = m_audioDevice->readAll();
         if (!chunk.isEmpty()) {
-            if (m_captureChannels == 2) {
-                // Downmix to mono before framing. A chunk boundary can
-                // split a stereo frame, so only whole stereo frames are
-                // converted here; a partial frame carries to the next call.
-                const int bytesPerStereoFrame = (m_useFloat ? 4 : 2) * 2;
-                m_downmixRemainder.append(chunk);
-                const int wholeBytes = (m_downmixRemainder.size() / bytesPerStereoFrame) * bytesPerStereoFrame;
-                if (wholeBytes > 0) {
-                    m_partialBuffer.append(downmixToMono(m_downmixRemainder.left(wholeBytes)));
-                    m_downmixRemainder.remove(0, wholeBytes);
-                }
-            } else {
-                m_partialBuffer.append(chunk);
-            }
+            m_partialBuffer.append(chunk);
             trimPcmBacklog();
             processPendingAudio();
         }
@@ -438,10 +360,8 @@ private:
     QTimer *m_logTimer;
     QQueue<QByteArray> m_queue;
     bool m_audioContinuationPending;
-    int m_captureChannels; // actual channel count from QAudioSource::format(): 1, or 2 when downmixing
-    bool m_useFloat; // true when capturing Float (preferred), false for the Int16 fallback; follows the ACTUAL format
-    int m_pcmFrameSize; // bytes per MONO frame for the active capture format (stereo is downmixed before framing)
-    QByteArray m_downmixRemainder; // trailing partial stereo frame held for the next onAudio() call
+    bool m_useFloat; // true when capturing Float (preferred), false for the Int16 fallback
+    int m_pcmFrameSize; // bytes per frame for the active capture format
     quint64 m_pcmBytes;
     quint64 m_opusBytes;
     quint64 m_sentBytes;
