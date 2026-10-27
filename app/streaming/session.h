@@ -11,6 +11,10 @@
 #include "audio/renderers/renderer.h"
 #include "video/overlaymanager.h"
 
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+class MicStream;
+#endif
+
 class SupportedVideoFormatList : public QList<int>
 {
 public:
@@ -148,6 +152,11 @@ private:
 
     bool startConnectionAsync();
 
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    void startMicrophone();
+    void stopMicrophone();
+#endif
+
     bool validateLaunch(SDL_Window* testWindow);
 
     void emitLaunchWarning(QString text);
@@ -271,6 +280,10 @@ private:
     // True while AWDL has been disabled for this session (macOS only).
     // Set in startConnectionAsync(), cleared in DeferredSessionCleanupTask.
     bool m_AwdlDisabled;
+
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    MicStream* m_MicStream;
+#endif
 
     int m_ActiveVideoFormat;
     int m_ActiveVideoWidth;
