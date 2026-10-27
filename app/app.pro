@@ -600,9 +600,9 @@ macx {
 VERSION = "$$cat(version.txt)"
 DEFINES += VERSION_STR=\\\"$$cat(version.txt)\\\"
 
-// Microphone passthrough (Qt6 only: uses the QAudioSource capture API
-// that SteamLink's Qt 5.14 lacks). The sender talks the Apollo UDP mic
-// protocol via LiSendMicrophoneOpusData() in neer2005/moonlight-common-c.
+# Microphone passthrough (Qt6 only: uses the QAudioSource capture API
+# that SteamLink's Qt 5.14 lacks). The sender talks the Apollo UDP mic
+# protocol via LiSendMicrophoneOpusData() in neer2005/moonlight-common-c.
 greaterThan(QT_MAJOR_VERSION, 5) {
     # Only the mic sender uses Qt Multimedia, and it is Qt6-only: keep
     # multimedia out of Qt5 builds (SteamLink), which never had it installed.
