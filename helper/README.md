@@ -20,7 +20,7 @@ bring `awdl0` down at stream start and back up at stream end.
   `com.moonlight-stream.Moonlight.AWDLHelper`, see
   `AWDLHelperProtocol.h`).
 - The helper is bundled inside `Moonlight.app/Contents/Library/LaunchServices/`
-  by `app.pro` (`QMAKE_BUNDLE_DATA`) and built by `moonlightawdlhelper.pro`
+  by `app.pro` (`QMAKE_BUNDLE_DATA`) and built by `helper.pro`
   (added as a macOS-only subdir in `moonlight-qt.pro`).
 
 ## Security model (non-negotiable)
@@ -45,7 +45,7 @@ bring `awdl0` down at stream start and back up at stream end.
   `SMPrivilegedExecutables` (requirement the *helper* must satisfy);
   the helper's embedded Info.plist declares `SMAuthorizedClients`
   (requirement the *app* must satisfy). The two plists are embedded into
-  the helper binary with `-sectcreate` (see `moonlightawdlhelper.pro`).
+  the helper binary with `-sectcreate` (see `helper.pro`).
   SMJobBless refuses to install if either side fails its requirement.
 
 ## Signing requirement — read this before testing
