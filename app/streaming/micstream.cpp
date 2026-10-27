@@ -1,7 +1,7 @@
 // micstream.cpp - Client-side microphone passthrough sender.
 //
 // Captures the default microphone with Qt, encodes Opus (VOIP, 64 kbps,
-// 20 ms frames), and sends each frame to the host via
+// 10 ms frames), and sends each frame to the host via
 // LiSendMicrophoneOpusData(), the Apollo UDP mic protocol (separate UDP
 // stream on port 48001, Opus AES-128-CBC when encryption is negotiated).
 // The host renders the stream into the Steam Streaming Microphone input.
@@ -12,6 +12,9 @@
 // happens in the RTSP handshake (common-c sets enableMic and negotiates
 // the mic stream); this sender simply transmits while a session is active
 // and the user enabled the microphone.
+// Capture prefers Float samples (as in Nightjar's SDL capture path) with an
+// Int16 fallback; MicStream::probe() lets the session warn before launch
+// when no usable microphone is available.
 //
 // NOTE: LiSendMicrophoneOpusData() does not exist in upstream
 // moonlight-common-c. It lives in neer2005/moonlight-common-c (Apollo port)
@@ -37,8 +40,7 @@
 #include <QThread>
 #include <QTimer>
 
-static const int PCM_FRAME_SAMPLES = 960; // 20 ms at 48 kHz
-static const int PCM_FRAME_SIZE = PCM_FRAME_SAMPLES * 2; // mono 16-bit
+static const int PCM_FRAME_SAMPLES = 480; // 10 ms at 48 kHz (Nightjar's desktop capture uses 10 ms frames)
 static const int MAX_OPUS_SIZE = 4000;
 static const int MAX_PENDING_PCM_FRAMES = 10;
 static const int MAX_PENDING_OPUS_FRAMES = 10;
@@ -47,7 +49,7 @@ static const int MAX_SEND_FRAMES_PER_PASS = 4;
 
 // Max Opus payload per packet. LiSendMicrophoneOpusData() accepts at most
 // MAX_MIC_PACKET_SIZE (1400 bytes) minus its 12-byte header; 64 kbps at
-// 20 ms is ~160 bytes/frame, comfortably under this cap. Frames that
+// 10 ms is ~80 bytes/frame, comfortably under this cap. Frames that
 // encode larger are dropped rather than split.
 static const int MAX_OPUS_SEND_SIZE = 1400 - 12;
 
@@ -61,6 +63,8 @@ public:
           m_sendTimer(nullptr),
           m_logTimer(nullptr),
           m_audioContinuationPending(false),
+          m_useFloat(false),
+          m_pcmFrameSize(0),
           m_pcmBytes(0),
           m_opusBytes(0),
           m_sentBytes(0),
@@ -91,7 +95,11 @@ public:
         QAudioFormat fmt;
         fmt.setSampleRate(48000);
         fmt.setChannelCount(1);
-        fmt.setSampleFormat(QAudioFormat::Int16);
+        // Prefer float capture (what CoreAudio produces natively, and what
+        // Nightjar's SDL capture requests); fall back to Int16 when the
+        // device does not offer float. Opus encodes float directly, so no
+        // conversion step is needed either way.
+        fmt.setSampleFormat(QAudioFormat::Float);
 
         QAudioDevice device = QMediaDevices::defaultAudioInput();
         if (device.isNull()) {
@@ -100,22 +108,27 @@ public:
             return false;
         }
 
-        if (!device.isFormatSupported(fmt)) {
-            const QAudioFormat preferredFormat = device.preferredFormat();
-            qWarning() << "[MicStream] Default audio input does not support required format: 48000 Hz mono Int16"
-                       << "device=" << device.description()
-                       << "preferred=" << preferredFormat.sampleRate() << "Hz"
-                       << preferredFormat.channelCount() << "channels"
-                       << "sampleFormat=" << preferredFormat.sampleFormat();
-            cleanupAudioResources();
-            return false;
+        m_useFloat = device.isFormatSupported(fmt);
+        if (!m_useFloat) {
+            fmt.setSampleFormat(QAudioFormat::Int16);
+            if (!device.isFormatSupported(fmt)) {
+                const QAudioFormat preferredFormat = device.preferredFormat();
+                qWarning() << "[MicStream] Default audio input does not support required format: 48000 Hz mono Float or Int16"
+                           << "device=" << device.description()
+                           << "preferred=" << preferredFormat.sampleRate() << "Hz"
+                           << preferredFormat.channelCount() << "channels"
+                           << "sampleFormat=" << preferredFormat.sampleFormat();
+                cleanupAudioResources();
+                return false;
+            }
         }
+        m_pcmFrameSize = PCM_FRAME_SAMPLES * (m_useFloat ? 4 : 2);
 
         qInfo() << "[MicStream] Using audio input device:" << device.description()
-                << "format=" << fmt.sampleRate() << "Hz" << fmt.channelCount() << "channels";
+                << "format=" << fmt.sampleRate() << "Hz" << fmt.channelCount() << "channels" << "sampleFormat=" << fmt.sampleFormat();
 
         m_audioInput = new QAudioSource(device, fmt, this);
-        m_audioInput->setBufferSize(PCM_FRAME_SIZE * 4);
+        m_audioInput->setBufferSize(m_pcmFrameSize * 4);
         connect(m_audioInput, &QAudioSource::stateChanged, this, [this](QAudio::State state) {
             qInfo() << "[MicStream] Audio state changed state=" << state
                     << "error=" << m_audioInput->error();
@@ -137,7 +150,7 @@ public:
         m_audioContinuationPending = false;
 
         m_sendTimer = new QTimer(this);
-        m_sendTimer->setInterval(20);
+        m_sendTimer->setInterval(10);
         connect(m_sendTimer, &QTimer::timeout, this, &MicStreamWorker::sendLoop);
         m_sendTimer->start();
 
@@ -204,16 +217,16 @@ private:
 
     void trimPcmBacklog()
     {
-        const int maxBytes = MAX_PENDING_PCM_FRAMES * PCM_FRAME_SIZE;
+        const int maxBytes = MAX_PENDING_PCM_FRAMES * m_pcmFrameSize;
         if (m_partialBuffer.size() <= maxBytes)
             return;
 
         const int excessBytes = m_partialBuffer.size() - maxBytes;
-        const int framesToDrop = (excessBytes + PCM_FRAME_SIZE - 1) / PCM_FRAME_SIZE;
-        const int completeBytes = m_partialBuffer.size() - (m_partialBuffer.size() % PCM_FRAME_SIZE);
-        const int bytesToDrop = qMin(framesToDrop * PCM_FRAME_SIZE, completeBytes);
+        const int framesToDrop = (excessBytes + m_pcmFrameSize - 1) / m_pcmFrameSize;
+        const int completeBytes = m_partialBuffer.size() - (m_partialBuffer.size() % m_pcmFrameSize);
+        const int bytesToDrop = qMin(framesToDrop * m_pcmFrameSize, completeBytes);
         m_partialBuffer.remove(0, bytesToDrop);
-        m_droppedPcmFrames += bytesToDrop / PCM_FRAME_SIZE;
+        m_droppedPcmFrames += bytesToDrop / m_pcmFrameSize;
     }
 
     void processPendingAudio()
@@ -222,18 +235,27 @@ private:
             return;
 
         int processedFrames = 0;
-        while (m_partialBuffer.size() >= PCM_FRAME_SIZE &&
+        while (m_partialBuffer.size() >= m_pcmFrameSize &&
                processedFrames < MAX_ENCODE_FRAMES_PER_PASS) {
-            QByteArray pcm = m_partialBuffer.left(PCM_FRAME_SIZE);
-            m_partialBuffer.remove(0, PCM_FRAME_SIZE);
+            QByteArray pcm = m_partialBuffer.left(m_pcmFrameSize);
+            m_partialBuffer.remove(0, m_pcmFrameSize);
             m_pcmBytes += pcm.size();
 
             unsigned char encoded[MAX_OPUS_SIZE];
-            int len = opus_encode(m_encoder,
+            int len;
+            if (m_useFloat) {
+                len = opus_encode_float(m_encoder,
+                                        reinterpret_cast<const float*>(pcm.constData()),
+                                        PCM_FRAME_SAMPLES,
+                                        encoded,
+                                        MAX_OPUS_SIZE);
+            } else {
+                len = opus_encode(m_encoder,
                                   reinterpret_cast<const opus_int16*>(pcm.constData()),
                                   PCM_FRAME_SAMPLES,
                                   encoded,
                                   MAX_OPUS_SIZE);
+            }
             if (len > 0) {
                 while (m_queue.size() >= MAX_PENDING_OPUS_FRAMES) {
                     m_queue.dequeue();
@@ -242,12 +264,12 @@ private:
                 m_queue.enqueue(QByteArray(reinterpret_cast<char*>(encoded), len));
                 m_opusBytes += len;
             } else {
-                qWarning() << "[MicStream] opus_encode failed len=" << len;
+                qWarning() << "[MicStream] Opus encode failed len=" << len;
             }
             processedFrames++;
         }
 
-        if (m_partialBuffer.size() >= PCM_FRAME_SIZE && !m_audioContinuationPending) {
+        if (m_partialBuffer.size() >= m_pcmFrameSize && !m_audioContinuationPending) {
             m_audioContinuationPending = true;
             QTimer::singleShot(0, this, [this]() {
                 m_audioContinuationPending = false;
@@ -284,7 +306,7 @@ private:
             int rc = LiSendMicrophoneOpusData(reinterpret_cast<const unsigned char*>(opus.constData()),
                                               opusLen);
             if (rc != 0) {
-                // Don't flood the log at 50 packets/sec; the 5s summary
+                // Don't flood the log at 100 packets/sec; the 5s summary
                 // reports the running error count.
                 if (m_sendErrors == 0) {
                     qWarning() << "[MicStream] LiSendMicrophoneOpusData failed rc=" << rc;
@@ -338,6 +360,8 @@ private:
     QTimer *m_logTimer;
     QQueue<QByteArray> m_queue;
     bool m_audioContinuationPending;
+    bool m_useFloat; // true when capturing Float (preferred), false for the Int16 fallback
+    int m_pcmFrameSize; // bytes per frame for the active capture format
     quint64 m_pcmBytes;
     quint64 m_opusBytes;
     quint64 m_sentBytes;
@@ -417,4 +441,34 @@ void MicStream::stop()
     delete m_thread;
     m_thread = nullptr;
     m_worker = nullptr;
+}
+
+bool MicStream::probe(QString* errorMessage)
+{
+    // Keep the macOS permission request on the calling thread (initialize
+    // runs on the GUI thread, the same thread the real start uses).
+    if (!checkAndRequestMicrophonePermission()) {
+        *errorMessage = "microphone permission was denied";
+        return false;
+    }
+
+    QAudioDevice device = QMediaDevices::defaultAudioInput();
+    if (device.isNull()) {
+        *errorMessage = "no audio input device is available";
+        return false;
+    }
+
+    QAudioFormat fmt;
+    fmt.setSampleRate(48000);
+    fmt.setChannelCount(1);
+    fmt.setSampleFormat(QAudioFormat::Float);
+    if (device.isFormatSupported(fmt)) {
+        return true;
+    }
+    fmt.setSampleFormat(QAudioFormat::Int16);
+    if (device.isFormatSupported(fmt)) {
+        return true;
+    }
+    *errorMessage = "the default microphone does not support 48000 Hz mono audio";
+    return false;
 }

@@ -1265,6 +1265,21 @@ bool Session::validateLaunch(SDL_Window* testWindow)
         return false;
     }
 
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    // Probe the microphone now, while launch warnings are still collected:
+    // the StreamSegue toasts display after initialize() returns, but the
+    // mic itself only starts after connectionStarted, when the window is
+    // already hidden and no warning could be shown. This catches a denied
+    // permission, a missing device, or an unsupported format up front;
+    // streaming continues without mic audio if the probe fails.
+    if (m_Preferences->enableMicrophone) {
+        QString micError;
+        if (!MicStream::probe(&micError)) {
+            emitLaunchWarning(tr("Microphone passthrough is enabled but the microphone could not be accessed (%1). Streaming will continue without microphone audio.").arg(micError));
+        }
+    }
+#endif
+
     return true;
 }
 
