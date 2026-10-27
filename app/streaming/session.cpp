@@ -1,6 +1,10 @@
 #include "session.h"
 #include "settings/streamingpreferences.h"
 
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+#include "streaming/micstream.h"
+#endif
+
 #ifdef Q_OS_MACOS
 #include "utils/awdlhelper.h"
 #endif
@@ -591,6 +595,9 @@ Session::Session(NvComputer* computer, NvApp& app, StreamingPreferences *prefere
       m_AudioRenderer(nullptr),
       m_AudioSampleCount(0),
       m_DropAudioEndTime(0)
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+      , m_MicStream(nullptr)
+#endif
 {
 }
 
@@ -662,6 +669,12 @@ bool Session::initialize(QQuickWindow* qtWindow)
     SDL_StopTextInput();
 
     LiInitializeStreamConfiguration(&m_StreamConfig);
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    // Microphone passthrough (Rubylight/Apollo UDP mic). Negotiated in
+    // common-c; the Qt6-only sender below transmits the frames. On Qt5
+    // (SteamLink) this stays false so no mic stream is negotiated.
+    m_StreamConfig.enableMic = m_Preferences->enableMicrophone;
+#endif
     m_StreamConfig.width = m_Preferences->width;
     m_StreamConfig.height = m_Preferences->height;
 
@@ -1312,6 +1325,14 @@ private:
         SDL_assert(m_Session->m_VideoDecoder == nullptr);
 
         // Finish cleanup of the connection state
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+        // Stop microphone passthrough before tearing down the connection:
+        // LiSendMicrophoneOpusData() is only valid between
+        // LiStartConnection() and LiStopConnection(). This task runs on
+        // every session exit path, so this is the single funnel that
+        // guarantees the mic stops (mirroring the AWDL re-enable above).
+        m_Session->stopMicrophone();
+#endif
         LiStopConnection();
 
         // Perform a best-effort app quit
@@ -1773,8 +1794,43 @@ bool Session::startConnectionAsync()
 
     emit connectionStarted();
 
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    // Start microphone passthrough if enabled. Queued so QAudioSource is
+    // created on the session thread's event loop, not inside any nested
+    // processEvents() call during launch (qiin2333's deferred-toggle
+    // rationale: creating QAudioSource inside nested event loops can
+    // corrupt the heap).
+    if (m_Preferences->enableMicrophone) {
+        QMetaObject::invokeMethod(this, [this]() {
+            startMicrophone();
+        }, Qt::QueuedConnection);
+    }
+#endif
+
     return true;
 }
+
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+void Session::startMicrophone()
+{
+    if (!m_MicStream) {
+        m_MicStream = new MicStream(this);
+        if (!m_MicStream->start()) {
+            delete m_MicStream;
+            m_MicStream = nullptr;
+        }
+    }
+}
+
+void Session::stopMicrophone()
+{
+    if (m_MicStream) {
+        m_MicStream->stop();
+        delete m_MicStream;
+        m_MicStream = nullptr;
+    }
+}
+#endif
 
 void Session::flushWindowEvents()
 {

@@ -599,3 +599,23 @@ macx {
 
 VERSION = "$$cat(version.txt)"
 DEFINES += VERSION_STR=\\\"$$cat(version.txt)\\\"
+
+// Microphone passthrough (Qt6 only: uses the QAudioSource capture API
+// that SteamLink's Qt 5.14 lacks). The sender talks the Apollo UDP mic
+// protocol via LiSendMicrophoneOpusData() in neer2005/moonlight-common-c.
+greaterThan(QT_MAJOR_VERSION, 5) {
+    SOURCES += streaming/micstream.cpp
+    HEADERS += streaming/micstream.h streaming/macpermissions.h
+
+    macx {
+        # macOS microphone permission pre-check (single TCC dialog before
+        # QMediaDevices is touched). Needs AVFoundation.
+        SOURCES += streaming/macpermissions.mm
+        LIBS += -framework AVFoundation
+    }
+
+    !macx {
+        # Stub permission check for non-macOS platforms (always grants).
+        SOURCES += streaming/macpermissions_stub.cpp
+    }
+}

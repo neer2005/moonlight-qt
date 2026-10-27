@@ -158,8 +158,12 @@ public:
     Q_PROPERTY(CaptureSysKeysMode captureSysKeysMode MEMBER captureSysKeysMode NOTIFY captureSysKeysModeChanged)
     Q_PROPERTY(Language language MEMBER language NOTIFY languageChanged);
     Q_PROPERTY(bool disableAwdlWhileStreaming MEMBER disableAwdlWhileStreaming NOTIFY disableAwdlWhileStreamingChanged)
+    Q_PROPERTY(bool enableMicrophone MEMBER enableMicrophone NOTIFY enableMicrophoneChanged)
+    Q_PROPERTY(bool microphoneSupported READ isMicrophoneSupported CONSTANT)
 
     Q_INVOKABLE bool retranslate();
+
+    bool isMicrophoneSupported() const;
 
     // Installs the privileged AWDL helper tool (macOS only). Returns an
     // empty string on success (or when already installed), otherwise an
@@ -195,6 +199,7 @@ public:
     bool swapFaceButtons;
     bool keepAwake;
     bool disableAwdlWhileStreaming;
+    bool enableMicrophone;
     int packetSize;
     AudioConfig audioConfig;
     VideoCodecConfig videoCodecConfig;
@@ -246,6 +251,7 @@ signals:
     void languageChanged();
     void rendererSelectionChanged();
     void disableAwdlWhileStreamingChanged();
+    void enableMicrophoneChanged();
 
 private:
     explicit StreamingPreferences(QQmlEngine *qmlEngine);
