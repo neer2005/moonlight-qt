@@ -17,6 +17,10 @@ TEMPLATE = app
 CONFIG -= app_bundle
 QT -= core gui
 
+# Include global qmake defs (debug_and_release: gives this project the
+# `release` target the top-level build invokes for every subdir)
+include(../globaldefs.pri)
+
 TARGET = com.moonlight-stream.Moonlight.AWDLHelper
 
 OBJECTIVE_SOURCES += MoonlightAWDLHelper.m
