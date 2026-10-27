@@ -1,4 +1,4 @@
-QT += core quick network quickcontrols2 svg multimedia
+QT += core quick network quickcontrols2 svg
 CONFIG += c++17
 
 unix:!macx {
@@ -604,6 +604,9 @@ DEFINES += VERSION_STR=\\\"$$cat(version.txt)\\\"
 // that SteamLink's Qt 5.14 lacks). The sender talks the Apollo UDP mic
 // protocol via LiSendMicrophoneOpusData() in neer2005/moonlight-common-c.
 greaterThan(QT_MAJOR_VERSION, 5) {
+    # Only the mic sender uses Qt Multimedia, and it is Qt6-only: keep
+    # multimedia out of Qt5 builds (SteamLink), which never had it installed.
+    QT += multimedia
     SOURCES += streaming/micstream.cpp
     HEADERS += streaming/micstream.h streaming/macpermissions.h
 
