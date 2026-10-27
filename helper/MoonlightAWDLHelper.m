@@ -33,12 +33,25 @@ static NSString * const kHelperLabel = @"com.moonlight-stream.Moonlight.AWDLHelp
 // Bundle identifier of the Moonlight app allowed to talk to this helper.
 static NSString * const kMoonlightBundleIdentifier = @"com.moonlight-stream.Moonlight";
 
+// NSXPCConnection's auditToken is available at runtime on macOS 13+ but is
+// not declared in the public SDK headers, so declare it here. The method is
+// private API (there is no public way to get a connection's audit token);
+// this helper is not an App Store app, so that is acceptable, and the
+// respondsToSelector check below fails closed if it ever disappears.
+@interface NSXPCConnection (MoonlightAuditToken)
+@property (nonatomic, readonly) audit_token_t auditToken;
+@end
+
 static BOOL ClientMeetsRequirement(NSXPCConnection *connection, NSString *requirementString)
 {
-    // kSecGuestAttributeAuditToken takes CFData containing an audit_token_t
+    // Fail closed if the audit-token accessor is ever unavailable.
+    if (![connection respondsToSelector:@selector(auditToken)]) {
+        return NO;
+    }
+    // kSecGuestAttributeAudit takes CFData containing an audit_token_t
     audit_token_t auditToken = connection.auditToken;
     NSData *tokenData = [NSData dataWithBytes:&auditToken length:sizeof(auditToken)];
-    NSDictionary *attributes = @{(__bridge NSString *)kSecGuestAttributeAuditToken: tokenData};
+    NSDictionary *attributes = @{(__bridge NSString *)kSecGuestAttributeAudit: tokenData};
     SecCodeRef clientCode = NULL;
     OSStatus status = SecCodeCopyGuestWithAttributes(NULL,
         (__bridge CFDictionaryRef)attributes,
